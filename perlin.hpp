@@ -1,153 +1,198 @@
 #pragma once
 #include <cmath>
+#include <array>
 
-unsigned long xorshift32(unsigned long x) {
-	x = x ^ (x << 13);
-	x = x ^ (x >> 17);
-	x = x ^ (x << 15);
-	return x;
+constexpr uint64_t xorshift(uint64_t x) noexcept{
+	x = (x + 88172645463325252ULL) ^ (x << 13);
+	x = x ^ (x >> 7);
+	return x ^ (x << 17);
 }
-
+double fade(double t) noexcept {
+	t = std::abs(t);
+	return 1-(t * t * t * (t * (t * 6 - 15) + 10));
+}
+constexpr double lerp(const double t, const double a1, const double a2) noexcept {
+	return a1 + t * (a2 - a1);
+}
 
 // 1D
-
-double wavelet1d(double x, double grad) {
-	double x_2 = x * x;
-	double x_4 = x_2 * x_2;
-	return (1 - (6 * std::abs(x_4*x) - 15 * x_4 + 10 * std::abs(x_2*x))) // C(x)
-		* (grad * x); // L(x)|ax
+double wave1d(double x, double grad) noexcept{
+	return fade(x) * (grad * x);
 }
-
-double pos2grad1d(unsigned long x, unsigned long seed = 0) {
-	double grad;
-	unsigned long r = xorshift32(x + seed);
-	// grad_x
-	r = xorshift32(r + 0) % 10000UL;
-	grad = (double)r / 5000.0 - 1.0; // -1.0~1.0
-	return grad;
+double pos2grad1d(int64_t x, uint64_t seed = 0)  noexcept {
+	return (double)xorshift(x + seed) / (UINT16_MAX / 2.0) - 1.0; // grad // -1.0~1.0
 }
-
-double perlin1d(double x, unsigned long seed = 0) {
-	double x_p = x - (unsigned long)x;
-	unsigned long x_l = (unsigned long)x;
-	double wav[2];
-	wav[0] = wavelet1d(x_p, pos2grad1d(x_l, seed));
-	wav[1] = wavelet1d(x_p - 1.0, pos2grad1d(x_l + 1, seed));
-	double result = wav[0] + x_p * (wav[1] - wav[0]);
-	return result;
+double perlin1d(double x, uint64_t seed = 0)  noexcept {
+	double x_decimal = x - (int64_t)x;
+	int64_t x_int = (int64_t)x;
+	return lerp(x_decimal, 
+		wave1d(x_decimal, pos2grad1d(x_int, seed)), 
+		wave1d(x_decimal - 1.0, pos2grad1d(x_int + 1, seed))
+	);
 }
 
 // 2D
-
-template<typename T>
-struct vec2 {
-	T x;
-	T y;
-};
-
-double wavelet2d(vec2<double> pos, vec2<double> grad) {
-	double x_2 = pos.x * pos.x;
-	double x_4 = x_2 * x_2;
-	double y_2 = pos.y * pos.y;
-	double y_4 = y_2 * y_2;
-	return (1 - (6 * std::abs(x_4*pos.x) - 15 * x_4 + 10 * std::abs(x_2*pos.x))) // C(x)
-		*(1 - (6 * std::abs(y_4*pos.y) - 15 * y_4 + 10 * std::abs(y_2*pos.y))) // C(y)
-		*(grad.x*pos.x + grad.y * pos.y); // L(x,y)|ax,ay
+double wave2d(const std::array<double,2>&& pos, const std::array<double, 2>&& grad) noexcept {
+	return fade(pos[0]) * fade(pos[1]) * (grad[0] * pos[0] + grad[1] * pos[1]);
 }
-
-vec2<double> pos2grad2d(vec2<unsigned long> pos, unsigned long seed = 0) {
-	vec2<double> grad;
-	unsigned long r = xorshift32(pos.x + seed);
-	r = xorshift32(r + pos.y);
-	// grad_x
-	unsigned long r_dash = xorshift32(r + 0) % 10000UL;
-	grad.x = (double)r_dash / 5000.0 - 1.0; // -1.0~1.0
-	// grad_y
-	r_dash = xorshift32(r + 1) % 10000UL;
-	grad.y = (double)r_dash / 5000.0 - 1.0; // -1.0~1.0
-	return grad;
+std::array<double, 2> pos2grad2d(const std::array<int64_t, 2>&& pos, const uint64_t seed = 0) noexcept {
+	constexpr auto mask = UINT16_MAX;
+	constexpr auto scale = (double)UINT16_MAX / 2.0;
+	uint64_t r = xorshift(pos[0] + seed) + pos[1];
+	return {
+		(double)(xorshift(r) & mask) / scale - 1.0, // grad_x // -1.0~1.0
+		(double)(xorshift(r + 1) & mask) / scale - 1.0 // grad_y // -1.0~1.0
+	};
 }
-
-double perlin2d(vec2<double> pos, unsigned long seed = 0) {
-	double x_p = pos.x - (unsigned long)pos.x, y_p = pos.y - (unsigned long)pos.y;
-	unsigned long x_l = (unsigned long)pos.x, y_l = (unsigned long)pos.y;
-	double wav[2][2];
-	wav[0][0] = wavelet2d({ x_p, y_p }, pos2grad2d({ x_l, y_l }, seed));
-	wav[0][1] = wavelet2d({ x_p - 1.0, y_p }, pos2grad2d({ x_l + 1,y_l }, seed));
-	wav[1][0] = wavelet2d({ x_p, y_p - 1.0 }, pos2grad2d({ x_l,y_l + 1 }, seed));
-	wav[1][1] = wavelet2d({ x_p - 1.0, y_p - 1.0 }, pos2grad2d({ x_l + 1,y_l + 1 }, seed));
-	double wav_y[2];
-	wav_y[0] = wav[0][0] + x_p * (wav[0][1] - wav[0][0]);
-	wav_y[1] = wav[1][0] + x_p * (wav[1][1] - wav[1][0]);
-	double result = wav_y[0] + y_p * (wav_y[1] - wav_y[0]);
-	return result;
+double perlin2d(std::array<double, 2> pos, uint64_t seed = 0) noexcept {
+	int64_t x_int = (int64_t)pos[0],
+		    y_int = (int64_t)pos[1];
+	double x_decimal = pos[0] - (int64_t)pos[0],
+		   y_decimal = pos[1] - (int64_t)pos[1];
+	double wav[2];
+	
+	wav[0] = lerp(x_decimal,
+		wave2d({ x_decimal      , y_decimal }, pos2grad2d({ x_int    , y_int }, seed)),
+		wave2d({ x_decimal - 1.0, y_decimal }, pos2grad2d({ x_int + 1, y_int }, seed))
+	);
+	wav[1] = lerp(x_decimal,
+		wave2d({ x_decimal      , y_decimal - 1.0 }, pos2grad2d({ x_int    , y_int + 1 }, seed)),
+		wave2d({ x_decimal - 1.0, y_decimal - 1.0 }, pos2grad2d({ x_int + 1, y_int + 1 }, seed))
+	);
+	return lerp(y_decimal,
+		wav[0],
+		wav[1]
+	);
 }
 
 // 3D
-
-template<typename T>
-struct vec3 {
-	T x;
-	T y;
-	T z;
-};
-
-double wavelet3d(vec3<double> pos, vec3<double> grad) {
-	double x_2 = pos.x * pos.x;
-	double x_4 = x_2 * x_2;
-	double y_2 = pos.y * pos.y;
-	double y_4 = y_2 * y_2;
-	double z_2 = pos.z * pos.z;
-	double z_4 = z_2 * z_2;
-	return (1 - (6 * std::abs(x_4*pos.x) - 15 * x_4 + 10 * std::abs(x_2*pos.x))) // C(x)
-		*(1 - (6 * std::abs(y_4*pos.y) - 15 * y_4 + 10 * std::abs(y_2*pos.y))) // C(y)
-		*(1 - (6 * std::abs(z_4*pos.z) - 15 * z_4 + 10 * std::abs(z_2*pos.z))) // C(z)
-		*(grad.x*pos.x + grad.y * pos.y + grad.z * pos.z); // L(x,y,z)|ax,ay.az
+double wave3d(const std::array<double,3>&& pos, const std::array<double, 3>&& grad) {
+	return fade(pos[0])*fade(pos[1])*fade(pos[2])*
+		(grad[0]*pos[0] + grad[1] * pos[1] + grad[2] * pos[2]);
 }
-
-vec3<double> pos2grad3d(vec3<unsigned long> pos, unsigned long seed = 0) {
-	vec3<double> grad;
-	unsigned long r = xorshift32(pos.x + seed);
-	r = xorshift32(r + pos.y);
-	r = xorshift32(r + pos.z);
-	// grad_x
-	unsigned long r_dash = xorshift32(r + 0) % 10000UL;
-	grad.x = (double)r_dash / 5000.0 - 1.0; // -1.0~1.0
-	// grad_y
-	r_dash = xorshift32(r + 1) % 10000UL;
-	grad.y = (double)r_dash / 5000.0 - 1.0; // -1.0~1.0
-	// grad_y
-	r_dash = xorshift32(r + 2) % 10000UL;
-	grad.z = (double)r_dash / 5000.0 - 1.0; // -1.0~1.0
-	return grad;
+std::array<double, 3> pos2grad3d(const std::array<int64_t, 3> pos, uint64_t seed = 0) {
+	constexpr auto mask = UINT16_MAX;
+	constexpr auto scale = (double)UINT16_MAX / 2.0;
+	uint64_t r = xorshift(xorshift(pos[0] + seed) + pos[1]) + pos[2];
+	return {
+		(double)(xorshift(r) & mask) / scale - 1.0, // grad_x // -1.0~1.0
+		(double)(xorshift(r+1) & mask) / scale - 1.0, // grad_y // -1.0~1.0
+		(double)(xorshift(r+2) & mask) / scale - 1.0 // grad_z // -1.0~1.0
+	};
 }
-
-double perlin3d(vec3<double> pos, unsigned long seed = 0) {
-	// After decimal point
-	double x_p = pos.x - (unsigned long)pos.x;
-	double y_p = pos.y - (unsigned long)pos.y;
-	double z_p = pos.z - (unsigned long)pos.z;
+double perlin3d(std::array<double, 3> pos, uint64_t seed = 0) {
 	// integer
-	unsigned long x_l = (unsigned long)pos.x;
-	unsigned long y_l = (unsigned long)pos.y;
-	unsigned long z_l = (unsigned long)pos.z;
-	double wav[2][2][2];
-	wav[0][0][0] = wavelet3d({ x_p, y_p, z_p }, pos2grad3d({ x_l, y_l, z_l }, seed));
-	wav[0][0][1] = wavelet3d({ x_p - 1.0, y_p, z_p }, pos2grad3d({ x_l + 1,y_l,z_l }, seed));
-	wav[0][1][0] = wavelet3d({ x_p, y_p - 1.0, z_p }, pos2grad3d({ x_l,y_l + 1,z_l }, seed));
-	wav[0][1][1] = wavelet3d({ x_p - 1.0, y_p - 1.0, z_p }, pos2grad3d({ x_l + 1,y_l + 1,z_l }, seed));
-	wav[1][0][0] = wavelet3d({ x_p, y_p, z_p - 1.0 }, pos2grad3d({ x_l, y_l, z_l + 1 }, seed));
-	wav[1][0][1] = wavelet3d({ x_p - 1.0, y_p, z_p - 1.0 }, pos2grad3d({ x_l + 1,y_l,z_l + 1 }, seed));
-	wav[1][1][0] = wavelet3d({ x_p, y_p - 1.0, z_p - 1.0 }, pos2grad3d({ x_l,y_l + 1,z_l + 1 }, seed));
-	wav[1][1][1] = wavelet3d({ x_p - 1.0, y_p - 1.0, z_p - 1.0 }, pos2grad3d({ x_l + 1,y_l + 1,z_l + 1 }, seed));
+	int64_t x_int = (int64_t)pos[0];
+	int64_t y_int = (int64_t)pos[1];
+	int64_t z_int = (int64_t)pos[2];
+	// After decimal point
+	double x_decimal = pos[0] - x_int;
+	double y_decimal = pos[1] - y_int;
+	double z_decimal = pos[2] - z_int;
+
 	double wav_y[2][2];
-	wav_y[0][0] = wav[0][0][0] + x_p * (wav[0][0][1] - wav[0][0][0]);
-	wav_y[0][1] = wav[0][1][0] + x_p * (wav[0][1][1] - wav[0][1][0]);
-	wav_y[1][0] = wav[1][0][0] + x_p * (wav[1][0][1] - wav[1][0][0]);
-	wav_y[1][1] = wav[1][1][0] + x_p * (wav[1][1][1] - wav[1][1][0]);
+	wav_y[0][0] = lerp(x_decimal,
+		wave3d({ x_decimal, y_decimal, z_decimal }, pos2grad3d({ x_int, y_int, z_int }, seed)),
+		wave3d({ x_decimal - 1.0, y_decimal, z_decimal }, pos2grad3d({ x_int + 1,y_int,z_int }, seed))
+	);
+	wav_y[0][1] = lerp(x_decimal,
+		wave3d({ x_decimal, y_decimal - 1.0, z_decimal }, pos2grad3d({ x_int,y_int + 1,z_int }, seed)),
+		wave3d({ x_decimal - 1.0, y_decimal - 1.0, z_decimal }, pos2grad3d({ x_int + 1,y_int + 1,z_int }, seed))
+	);
+	wav_y[1][0] = lerp(x_decimal, 
+		wave3d({ x_decimal, y_decimal, z_decimal - 1.0 }, pos2grad3d({ x_int, y_int, z_int + 1 }, seed)),
+		wave3d({ x_decimal - 1.0, y_decimal, z_decimal - 1.0 }, pos2grad3d({ x_int + 1,y_int,z_int + 1 }, seed))
+	);
+	wav_y[1][1] = lerp(x_decimal, 
+		wave3d({ x_decimal, y_decimal - 1.0, z_decimal - 1.0 }, pos2grad3d({ x_int,y_int + 1,z_int + 1 }, seed)),
+		wave3d({ x_decimal - 1.0, y_decimal - 1.0, z_decimal - 1.0 }, pos2grad3d({ x_int + 1,y_int + 1,z_int + 1 }, seed))
+	);
 	double wav_z[2];
-	wav_z[0] = wav_y[0][0] + y_p * (wav_y[0][1] - wav_y[0][0]);
-	wav_z[1] = wav_y[1][0] + y_p * (wav_y[1][1] - wav_y[1][0]);
-	double result = wav_z[0] + z_p * (wav_z[1] - wav_z[0]);
-	return result;
+	wav_z[0] = lerp(y_decimal, wav_y[0][0], wav_y[0][1]);
+	wav_z[1] = lerp(y_decimal, wav_y[1][0], wav_y[1][1]);
+	return lerp(z_decimal, wav_z[0], wav_z[1]);
+}
+
+
+constexpr uint64_t pow_int(const uint64_t t, const uint64_t n) { //t^n
+	uint64_t rtn = 1;
+	for (uint64_t i = 0; i < n; i++) {
+		rtn *= t;
+	}
+	return rtn;
+}
+template<uint64_t N>
+double wave(const std::array<double, N>& pos, const std::array<double, N>& grad) {
+	double mul = fade(pos[0]);
+	double dot = pos[0] * grad[0];	
+	for (uint64_t n = 1; n < N; n++) {
+		mul *= fade(pos[n]);
+		dot += pos[n] * grad[n];
+	}
+	return mul * dot;
+}
+template<uint64_t N>
+std::array<double, N> pos2grad(const std::array<int64_t, N>& pos, uint64_t seed = 0) {
+	constexpr auto mask = UINT16_MAX;
+	constexpr auto scale = (double)UINT16_MAX / 2.0;
+	uint64_t r = seed + pos[0];
+	for (uint64_t n = 1; n < N; n++) {
+		r = xorshift(r) + pos[n];
+	}
+	std::array<double, N> grad;
+	grad[0] = (double)(r & mask) / scale - 1.0;
+	for (uint64_t n = 1; n < N; n++) {
+		grad[n] = (double)(xorshift(r + n) & mask) / scale - 1.0;
+	}
+	return std::move(grad);
+}
+template<uint64_t N>
+double perlin(std::array<double, N> pos_decimal, uint64_t seed = 0) {
+	std::array<int64_t, N> pos_int;
+	for (uint64_t n = 0; n < N; n++) {
+		// integer
+		pos_int[n] = (int64_t)pos_decimal[n];
+		// After decimal point
+		pos_decimal[n] = pos_decimal[n] - pos_int[n];
+	}
+
+	// wave
+	constexpr uint64_t wave_count = pow_int(2, N - 1);
+	std::array<double, wave_count> wavs;
+	for (uint64_t i = 0; i < wave_count; i++) {
+		//initialize positions
+		std::array<double, N> p_d = pos_decimal;
+		std::array<int64_t, N> p_i = pos_int;
+		uint64_t num = 2*i;
+		for (uint64_t n = 1; n < N; n++) {
+			uint64_t b = ((num & ((uint64_t)1 << n)) != 0); // does i stand n bit
+			p_d[n] -= (double)b;
+			p_i[n] += b;
+		}
+		//do wave
+		double wav = wave<N>(p_d, pos2grad<N>(p_i, seed));
+		//initialize positions
+		p_d = pos_decimal;
+		p_i = pos_int;
+		p_d[0] -= 1;
+		p_i[0] += 1;
+		for (uint64_t n = 1; n < N; n++) {
+			uint64_t b = ((num & ((uint64_t)1 << n)) != 0); // does i stand n bit
+			p_d[n] -= (double)b;
+			p_i[n] += b;
+		}
+		//do wave
+		wavs[i] = lerp(pos_decimal[0],
+			wav,
+			wave<N>(p_d, pos2grad<N>(p_i, seed))
+		);
+	}
+	// lerp
+	for (uint64_t n = 1; n < N; n++) {
+		const uint64_t loop_count = pow_int(2, N - n);
+		for (uint64_t i = 0; i < loop_count; i+=2) {
+			wavs[i] = lerp(pos_decimal[n], wavs[i], wavs[i + 1]);
+		}
+	}
+	return wavs[0];
 }
